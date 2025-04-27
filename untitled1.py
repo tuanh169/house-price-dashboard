@@ -1,80 +1,98 @@
+
+
 import streamlit as st
 import pandas as pd
-import pickle
 import numpy as np
+import joblib
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-# Set page config
-st.set_page_config(page_title="Denmark House Price Dashboard", layout="wide")
+# --- Load City Mapping ---
+city_mapping_df = pd.read_csv('city_mapping.csv')  # file chứa city_code, city_name
+city_code_to_name = dict(zip(city_mapping_df['city_code'], city_mapping_df['city_name']))
+city_name_to_code = dict(zip(city_mapping_df['city_name'], city_mapping_df['city_code']))
 
-# Load data
-df = pd.read_csv('C:/Users/Vuong/Downloads/train_merged.csv')
+# --- Load Model & Data ---
+@st.cache_resource
+def load_model():
+    model = joblib.load("xgboost_model.pkl")
+    return model
 
-# Load trained model
-model = pickle.load(open('model.pkl', 'rb'))
+@st.cache_data
+def load_data():
+    df = pd.read_csv("train_merged.csv")
+    return df
 
-# Sidebar - Filters
-st.sidebar.header("Filters")
-selected_city = st.sidebar.selectbox("Select City/District", sorted(df['city'].unique()))
-price_range = st.sidebar.slider("Select Price Range", 
-                                 int(df['price'].min()), 
-                                 int(df['price'].max()), 
-                                 (int(df['price'].min()), int(df['price'].max())))
+model = load_model()
+df = load_data()
 
-property_type = st.sidebar.multiselect("Property Type", df['property_type'].unique(), default=df['property_type'].unique())
+# --- Sidebar: User Input ---  
+st.sidebar.title("🔍 Nhập thông tin dự đoán")  
+area = st.sidebar.number_input("Diện tích (m²)", min_value=10, max_value=1000, value=120)  
+rooms = st.sidebar.slider("Số phòng", 1, 10, 3)  
+zipcode = st.sidebar.selectbox("Mã vùng (zipcode)", df['zipcode'].unique())  
+house_type = st.sidebar.selectbox("Loại nhà", df['house_type'].unique())  
+sales_type = st.sidebar.selectbox("Loại bán", df['sales_type'].unique())  
+year_build = st.sidebar.number_input("Năm xây dựng", min_value=1900, max_value=2025, value=2000)  
+sqm_price = st.sidebar.number_input("Giá/m²", min_value=0, value=0)  
 
-# Filter data based on sidebar selections
-filtered_df = df[(df['city'] == selected_city) &
-                 (df['price'].between(price_range[0], price_range[1])) &
-                 (df['property_type'].isin(property_type))]
+# city phần sửa:
+city_name = st.sidebar.selectbox("Thành phố", list(city_name_to_code.keys()))
+city = city_name_to_code[city_name]  # lấy city_code để predict
 
-# Main title
-st.title("🏠 Denmark Real Estate Dashboard")
+region = st.sidebar.selectbox("Vùng", df['region'].unique())  
+nom_interest_rate = st.sidebar.number_input("Lãi suất cho vay (%)", value=0.0)  
+dk_ann_infl_rate = st.sidebar.number_input("Lạm phát dự kiến (%)", value=0.0)  
+yield_on_mortgage_credit_bonds = st.sidebar.number_input("Lợi suất trái phiếu tín dụng thế chấp (%)", value=0.0)  
 
-# Show average price
-st.header(f"Average House Price in {selected_city}")
-avg_price = filtered_df['price'].mean()
-st.metric(label="Average Price", value=f"${avg_price:,.0f}")
+# --- Dự đoán ---
+input_data = pd.DataFrame({
+    'house_type': [house_type],
+    'sales_type': [sales_type],
+    'year_build': [year_build],
+    'no_rooms': [rooms],
+    'sqm': [area],
+    'sqm_price': [sqm_price],
+    'zip_code': [zipcode],
+    'city': [city],
+    'area': [area],
+    'region': [region],
+    'nom_interest_rate%': [nom_interest_rate],
+    'dk_ann_infl_rate%': [dk_ann_infl_rate],
+    'yield_on_mortgage_credit_bonds%': [yield_on_mortgage_credit_bonds],
+})
 
-# Bar chart - Price by District
-st.subheader("House Prices by District")
-fig_bar = px.bar(filtered_df.groupby('district')['price'].mean().reset_index(),
-                 x='district', y='price', color='district', title='Average Price by District')
-st.plotly_chart(fig_bar, use_container_width=True)
+predicted_price = model.predict(input_data)[0]
 
-# Heatmap (if available coordinates)
-if 'latitude' in df.columns and 'longitude' in df.columns:
-    st.subheader("Heatmap of House Prices")
-    fig_map = px.density_mapbox(filtered_df, lat='latitude', lon='longitude', z='price', radius=10,
-                                center=dict(lat=filtered_df['latitude'].mean(), lon=filtered_df['longitude'].mean()),
-                                zoom=9, mapbox_style="stamen-terrain")
-    st.plotly_chart(fig_map, use_container_width=True)
+# --- Hiển thị kết quả ---
+st.title("🏠 Dự đoán giá nhà ở Đan Mạch")
+st.subheader("Giá nhà dự đoán:")
+st.success(f"💰 {predicted_price:,.0f} DKK")
 
-# Line chart - Price trend over time
-st.subheader("Price Trend Over Time")
-if 'date_sold' in df.columns:
-    df['date_sold'] = pd.to_datetime(df['date_sold'])
-    fig_line = px.line(filtered_df.groupby('date_sold')['price'].mean().reset_index(),
-                       x='date_sold', y='price', title='Average Price Over Time')
-    st.plotly_chart(fig_line, use_container_width=True)
+# --- Biểu đồ EDA ---
+st.subheader("Phân tích dữ liệu (EDA)")
 
-# Prediction Section
-st.header("🔢 Predict House Price")
-st.markdown("Input property details below to predict price:")
+with st.expander("Heatmap Tương Quan"):
+    corr = df.corr(numeric_only=True)
+    if 'purchaseprice' in corr.columns:
+        top_corr = corr['purchaseprice'].abs().sort_values(ascending=False)[1:11].index
+        selected_corr = corr.loc[top_corr, top_corr]
+    else:
+        selected_corr = corr
+    fig, ax = plt.subplots(figsize=(10, 8))
+    sns.heatmap(selected_corr, annot=True, cmap="coolwarm", linewidths=0.5, square=True, fmt=".2f")
+    ax.set_title("Heatmap các biến tương quan")
+    st.pyplot(fig)
 
-col1, col2 = st.columns(2)
-with col1:
-    size = st.number_input('Size (sqm)', min_value=10, max_value=500, value=100)
-    rooms = st.number_input('Number of Rooms', min_value=1, max_value=10, value=3)
-with col2:
-    year_built = st.number_input('Year Built', min_value=1800, max_value=2025, value=2000)
-    lot_size = st.number_input('Lot Size (sqm)', min_value=0, max_value=5000, value=500)
+with st.expander("Biểu đồ phân bố diện tích"):
+    fig2, ax2 = plt.subplots()
+    sns.histplot(df['area'], bins=30, kde=True, ax=ax2)
+    st.pyplot(fig2)
 
-# Button to predict
-if st.button("Predict Price"):
-    input_data = np.array([[size, rooms, year_built, lot_size]])
-    prediction = model.predict(input_data)
-    st.success(f"Estimated House Price: ${prediction[0]:,.0f}")
+with st.expander("ROI theo khu vực"):
+    roi_data = df.groupby('zipcode')['purchaseprice'].mean()
+    st.line_chart(roi_data)
 
-# Footer
-st.markdown("---")
-st.caption("Built with Streamlit 🚀")
+# --- User Guide ---
+st.sidebar.markdown("---")
+st.sidebar.markdown(" **Hướng dẫn:** Nhập thông tin ở trên để dự đoán giá nhà. Xem biểu đồ và phân tích bên dưới.")
