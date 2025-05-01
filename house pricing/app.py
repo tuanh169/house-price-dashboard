@@ -4,6 +4,7 @@ import numpy as np
 import joblib
 import matplotlib.pyplot as plt
 import seaborn as sns
+pip install xgboost
 
 # --- Load City Mapping ---
 city_mapping_df = pd.read_csv('city_mapping.csv')  # file chứa city_code, city_name
